@@ -116,6 +116,8 @@ func (rm *resourceManager) sdkFind(
 		return nil, ackerr.NotFound
 	}
 
+	rm.setStatusDefaults(ko)
+
 	return &resource{ko}, nil
 }
 
@@ -169,13 +171,8 @@ func (rm *resourceManager) sdkCreate(
 		ko.Status.RepositoryURI = resp.Repository.RepositoryUri
 	}
 
-	if ko.Status.ACKResourceMetadata == nil {
-		ko.Status.ACKResourceMetadata = &ackv1alpha1.ResourceMetadata{}
-	}
-	if ko.Status.ACKResourceMetadata.OwnerAccountID == nil {
-		ko.Status.ACKResourceMetadata.OwnerAccountID = &rm.awsAccountID
-	}
-	ko.Status.Conditions = []*ackv1alpha1.Condition{}
+	rm.setStatusDefaults(ko)
+
 	return &resource{ko}, nil
 }
 
@@ -235,8 +232,7 @@ func (rm *resourceManager) sdkUpdate(
 	latest *resource,
 	diffReporter *ackcompare.Reporter,
 ) (*resource, error) {
-	// TODO(jaypipes): Figure this out...
-	return nil, nil
+	return rm.customUpdateRepository(ctx, desired, latest, diffReporter)
 }
 
 // sdkDelete deletes the supplied resource in the backend AWS service API
@@ -267,4 +263,19 @@ func (rm *resourceManager) newDeleteRequestPayload(
 	}
 
 	return res, nil
+}
+
+// setStatusDefaults sets default properties into supplied custom resource
+func (rm *resourceManager) setStatusDefaults(
+	ko *svcapitypes.Repository,
+) {
+	if ko.Status.ACKResourceMetadata == nil {
+		ko.Status.ACKResourceMetadata = &ackv1alpha1.ResourceMetadata{}
+	}
+	if ko.Status.ACKResourceMetadata.OwnerAccountID == nil {
+		ko.Status.ACKResourceMetadata.OwnerAccountID = &rm.awsAccountID
+	}
+	if ko.Status.Conditions == nil {
+		ko.Status.Conditions = []*ackv1alpha1.Condition{}
+	}
 }

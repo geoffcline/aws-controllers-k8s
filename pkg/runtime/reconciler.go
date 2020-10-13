@@ -27,6 +27,7 @@ import (
 
 	ackv1alpha1 "github.com/aws/aws-controllers-k8s/apis/core/v1alpha1"
 	ackerr "github.com/aws/aws-controllers-k8s/pkg/errors"
+	ackmetrics "github.com/aws/aws-controllers-k8s/pkg/metrics"
 	"github.com/aws/aws-controllers-k8s/pkg/requeue"
 	ackrtcache "github.com/aws/aws-controllers-k8s/pkg/runtime/cache"
 	acktypes "github.com/aws/aws-controllers-k8s/pkg/types"
@@ -40,12 +41,13 @@ import (
 // controller-runtime.Controller objects (each containing a single reconciler
 // object)s and sharing watch and informer queues across those controllers.
 type reconciler struct {
-	kc    client.Client
-	rmf   acktypes.AWSResourceManagerFactory
-	rd    acktypes.AWSResourceDescriptor
-	log   logr.Logger
-	cfg   Config
-	cache ackrtcache.Caches
+	kc      client.Client
+	rmf     acktypes.AWSResourceManagerFactory
+	rd      acktypes.AWSResourceDescriptor
+	log     logr.Logger
+	cfg     Config
+	cache   ackrtcache.Caches
+	metrics *ackmetrics.Metrics
 }
 
 // GroupKind returns the string containing the API group and kind reconciled by
@@ -120,7 +122,7 @@ func (r *reconciler) reconcile(req ctrlrt.Request) error {
 		"kind", r.rd.GroupKind().String(),
 	).V(1).Info("starting reconcilation")
 
-	rm, err := r.rmf.ManagerFor(r, sess, acctID, region)
+	rm, err := r.rmf.ManagerFor(r.log, r.metrics, r, sess, acctID, region)
 	if err != nil {
 		return err
 	}
@@ -185,12 +187,39 @@ func (r *reconciler) sync(
 			"arn", latest.Identifiers().ARN(),
 			"is_adopted", isAdopted,
 		)
+		// Before we update the backend AWS service resources, let's first update
+		// the latest status of CR which was retrieved by ReadOne call.
+		// Else, latest read status is lost in-case Update call fails with error.
+		err = r.updateCRStatus(ctx, desired, latest)
+		if err != nil {
+			return err
+		}
 		latest, err = rm.Update(ctx, desired, latest, diffReporter)
 		if err != nil {
 			return err
 		}
 		r.log.V(0).Info("reconciler.sync updated resource")
 	}
+	err = r.updateCRStatus(ctx, desired, latest)
+	if err != nil {
+		return err
+	}
+	for _, condition := range latest.Conditions() {
+		if condition.Type == ackv1alpha1.ConditionTypeResourceSynced &&
+			condition.Status != corev1.ConditionTrue {
+			return requeue.NeededAfter(
+				ackerr.TemporaryOutOfSync, requeue.DefaultRequeueAfterDuration)
+		}
+	}
+	return nil
+}
+
+// updateCRStatus updates status of CR using the supplied latest resource.
+func (r *reconciler) updateCRStatus(
+	ctx context.Context,
+	desired acktypes.AWSResource,
+	latest acktypes.AWSResource,
+) error {
 	changedStatus, err := r.rd.UpdateCRStatus(latest)
 	if err != nil {
 		return err
@@ -207,7 +236,7 @@ func (r *reconciler) sync(
 		return err
 	}
 	r.log.V(1).Info("patched CR status")
-	return err
+	return nil
 }
 
 // cleanup ensures that the supplied AWSResource's backing API resource is
@@ -402,11 +431,13 @@ func NewReconciler(
 	rmf acktypes.AWSResourceManagerFactory,
 	log logr.Logger,
 	cfg Config,
+	metrics *ackmetrics.Metrics,
 ) acktypes.AWSResourceReconciler {
 	return &reconciler{
-		rmf: rmf,
-		rd:  rmf.ResourceDescriptor(),
-		log: log,
-		cfg: cfg,
+		rmf:     rmf,
+		rd:      rmf.ResourceDescriptor(),
+		log:     log,
+		cfg:     cfg,
+		metrics: metrics,
 	}
 }

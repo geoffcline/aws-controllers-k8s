@@ -86,6 +86,7 @@ func (rm *resourceManager) sdkFind(
 		ko.Spec.Description = resp.Description
 	}
 
+	rm.setStatusDefaults(ko)
 	return &resource{ko}, nil
 }
 
@@ -165,13 +166,8 @@ func (rm *resourceManager) sdkCreate(
 		ko.Status.DeploymentStatusMessage = resp.DeploymentStatusMessage
 	}
 
-	if ko.Status.ACKResourceMetadata == nil {
-		ko.Status.ACKResourceMetadata = &ackv1alpha1.ResourceMetadata{}
-	}
-	if ko.Status.ACKResourceMetadata.OwnerAccountID == nil {
-		ko.Status.ACKResourceMetadata.OwnerAccountID = &rm.awsAccountID
-	}
-	ko.Status.Conditions = []*ackv1alpha1.Condition{}
+	rm.setStatusDefaults(ko)
+
 	return &resource{ko}, nil
 }
 
@@ -233,6 +229,8 @@ func (rm *resourceManager) sdkUpdate(
 		ko.Status.DeploymentStatusMessage = resp.DeploymentStatusMessage
 	}
 
+	rm.setStatusDefaults(ko)
+
 	return &resource{ko}, nil
 }
 
@@ -284,4 +282,19 @@ func (rm *resourceManager) newDeleteRequestPayload(
 	}
 
 	return res, nil
+}
+
+// setStatusDefaults sets default properties into supplied custom resource
+func (rm *resourceManager) setStatusDefaults(
+	ko *svcapitypes.Deployment,
+) {
+	if ko.Status.ACKResourceMetadata == nil {
+		ko.Status.ACKResourceMetadata = &ackv1alpha1.ResourceMetadata{}
+	}
+	if ko.Status.ACKResourceMetadata.OwnerAccountID == nil {
+		ko.Status.ACKResourceMetadata.OwnerAccountID = &rm.awsAccountID
+	}
+	if ko.Status.Conditions == nil {
+		ko.Status.Conditions = []*ackv1alpha1.Condition{}
+	}
 }

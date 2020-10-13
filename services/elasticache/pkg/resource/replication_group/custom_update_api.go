@@ -16,6 +16,9 @@ package replication_group
 import (
 	"context"
 	"fmt"
+	ackv1alpha1 "github.com/aws/aws-controllers-k8s/apis/core/v1alpha1"
+	"github.com/aws/aws-controllers-k8s/pkg/requeue"
+	"github.com/pkg/errors"
 
 	ackcompare "github.com/aws/aws-controllers-k8s/pkg/compare"
 	svcapitypes "github.com/aws/aws-controllers-k8s/services/elasticache/apis/v1alpha1"
@@ -30,6 +33,14 @@ func (rm *resourceManager) CustomModifyReplicationGroup(
 	latest *resource,
 	diffReporter *ackcompare.Reporter,
 ) (*resource, error) {
+
+	latestRGStatus := latest.ko.Status.Status
+	if latestRGStatus != nil && *latestRGStatus != "available" {
+		return nil, requeue.NeededAfter(
+			errors.New("Replication Group can not be modified, it is not in 'available' state."),
+			requeue.DefaultRequeueAfterDuration)
+	}
+
 	// Order of operations when diffs map to multiple updates APIs:
 	// 1. updateReplicaCount() is invoked Before updateShardConfiguration()
 	//	  because both accept availability zones, however the number of
@@ -90,9 +101,9 @@ func (rm *resourceManager) diffReplicasPerNodeGroup(
 
 	for _, latestShard := range latestStatus.NodeGroups {
 		latestReplicaCount := 0
-		for _, latestShardMember := range latestShard.NodeGroupMembers {
-			if latestShardMember.CurrentRole != nil && *latestShardMember.CurrentRole == "replica" {
-				latestReplicaCount++
+		if latestShard.NodeGroupMembers != nil {
+			if len(latestShard.NodeGroupMembers) > 0 {
+				latestReplicaCount = len(latestShard.NodeGroupMembers) - 1
 			}
 		}
 		if desiredReplicaCount := int(*desiredSpec.ReplicasPerNodeGroup); desiredReplicaCount != latestReplicaCount {
@@ -125,9 +136,9 @@ func (rm *resourceManager) diffReplicasNodeGroupConfiguration(
 			continue
 		}
 		latestReplicaCount := 0
-		for _, latestShardMember := range latestShard.NodeGroupMembers {
-			if latestShardMember.CurrentRole != nil && *latestShardMember.CurrentRole == "replica" {
-				latestReplicaCount++
+		if latestShard.NodeGroupMembers != nil {
+			if len(latestShard.NodeGroupMembers) > 0 {
+				latestReplicaCount = len(latestShard.NodeGroupMembers) - 1
 			}
 		}
 		latestReplicaCounts[*latestShard.NodeGroupID] = latestReplicaCount
@@ -193,7 +204,7 @@ func (rm *resourceManager) increaseReplicaCount(
 	if respErr != nil {
 		return nil, respErr
 	}
-	return provideUpdatedResource(desired, resp.ReplicationGroup)
+	return rm.provideUpdatedResource(desired, resp.ReplicationGroup)
 }
 
 func (rm *resourceManager) decreaseReplicaCount(
@@ -208,7 +219,7 @@ func (rm *resourceManager) decreaseReplicaCount(
 	if respErr != nil {
 		return nil, respErr
 	}
-	return provideUpdatedResource(desired, resp.ReplicationGroup)
+	return rm.provideUpdatedResource(desired, resp.ReplicationGroup)
 }
 
 func (rm *resourceManager) updateShardConfiguration(
@@ -224,7 +235,7 @@ func (rm *resourceManager) updateShardConfiguration(
 	if respErr != nil {
 		return nil, respErr
 	}
-	return provideUpdatedResource(desired, resp.ReplicationGroup)
+	return rm.provideUpdatedResource(desired, resp.ReplicationGroup)
 }
 
 // newIncreaseReplicaCountRequestPayload returns an SDK-specific struct for the HTTP request
@@ -386,8 +397,14 @@ func (rm *resourceManager) newUpdateShardConfigurationRequestPayload(
 	decrease := desiredShardsCount != nil && latestShardsCount != nil && *desiredShardsCount < *latestShardsCount
 
 	if increase {
-		res.SetReshardingConfiguration(shardsConfig)
+		if len(shardsConfig) > 0 {
+			res.SetReshardingConfiguration(shardsConfig)
+		}
 	} else if decrease {
+		if len(shardsToRetain) == 0 {
+			return nil, fmt.Errorf("Could not determine NodeGroups to retain while preparing for decrease nodegroups. " +
+				"Consider specifying Spec.NodeGroupConfiguration details to resolve this error.")
+		}
 		res.SetNodeGroupsToRetain(shardsToRetain)
 	}
 
@@ -396,14 +413,21 @@ func (rm *resourceManager) newUpdateShardConfigurationRequestPayload(
 
 // This method copies the data from given replicationGroup by populating it into copy of supplied resource
 // and returns it.
-func provideUpdatedResource(
-	r *resource,
+func (rm *resourceManager) provideUpdatedResource(
+	desired *resource,
 	replicationGroup *svcsdk.ReplicationGroup,
 ) (*resource, error) {
 	// Merge in the information we read from the API call above to the copy of
 	// the original Kubernetes object we passed to the function
-	ko := r.ko.DeepCopy()
+	ko := desired.ko.DeepCopy()
 
+	if ko.Status.ACKResourceMetadata == nil {
+		ko.Status.ACKResourceMetadata = &ackv1alpha1.ResourceMetadata{}
+	}
+	if replicationGroup.ARN != nil {
+		arn := ackv1alpha1.AWSResourceName(*replicationGroup.ARN)
+		ko.Status.ACKResourceMetadata.ARN = &arn
+	}
 	if replicationGroup.AuthTokenEnabled != nil {
 		ko.Status.AuthTokenEnabled = replicationGroup.AuthTokenEnabled
 	}
@@ -548,6 +572,8 @@ func provideUpdatedResource(
 	if replicationGroup.Status != nil {
 		ko.Status.Status = replicationGroup.Status
 	}
-
+	rm.setStatusDefaults(ko)
+	// custom set output from response
+	rm.customSetOutput(desired, replicationGroup, ko)
 	return &resource{ko}, nil
 }

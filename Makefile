@@ -6,10 +6,7 @@ GO111MODULE=on
 DOCKER_REPOSITORY ?= amazon/aws-controllers-k8s
 DOCKER_USERNAME ?= ""
 DOCKER_PASSWORD ?= ""
-PKGS=$(sort $(dir $(wildcard pkg/*/*/)))
-MOCKS=$(foreach x, $(PKGS), mocks/$(x))
 
-MOCKERY_BIN=$(shell which mockery || "./bin/mockery")
 AWS_SERVICE=$(shell echo $(SERVICE) | tr '[:upper:]' '[:lower:]')
 
 # Build ldflags
@@ -30,7 +27,9 @@ GO_TAGS=-tags codegen
 all: test
 
 build-ack-generate:	## Build ack-generate binary
-	go build ${GO_TAGS} ${GO_LDFLAGS} -o bin/ack-generate cmd/ack-generate/main.go
+	@echo -n "building ack-generate ... "
+	@go build ${GO_TAGS} ${GO_LDFLAGS} -o bin/ack-generate cmd/ack-generate/main.go
+	@echo "ok."
 
 test: | mocks	## Run code tests
 	go test ${GO_TAGS} ./...
@@ -39,17 +38,17 @@ clean-mocks:	## Remove mocks directory
 	rm -rf mocks
 
 build-controller-image:	## Build container image for SERVICE
-	./scripts/build-controller-image.sh -s $(AWS_SERVICE)
+	@./scripts/build-controller-image.sh -s $(AWS_SERVICE)
 
 publish-controller-image:  ## docker push a container image for SERVICE
 	@echo $(DOCKER_PASSWORD) | docker login -u $(DOCKER_USERNAME) --password-stdin
 	./scripts/publish-controller-image.sh -r $(DOCKER_REPOSITORY) -s $(AWS_SERVICE)
 
 build-controller: build-ack-generate ## Generate controller code for SERVICE
-	./scripts/build-controller.sh $(AWS_SERVICE)
+	@./scripts/build-controller.sh $(AWS_SERVICE)
 
-kind-test: test	## Run functional tests for SERVICE with AWS_ROLE_ARN
-	./scripts/kind-build-test.sh -s $(AWS_SERVICE) -p -r $(AWS_ROLE_ARN)
+kind-test: ## Run functional tests for SERVICE with AWS_ROLE_ARN
+	@./scripts/kind-build-test.sh -s $(AWS_SERVICE) -p -r $(AWS_ROLE_ARN)
 
 delete-all-kind-clusters:	## Delete all local kind clusters
 	@kind get clusters | \
@@ -58,10 +57,13 @@ delete-all-kind-clusters:	## Delete all local kind clusters
 	done
 	@rm -rf build/tmp-test*
 
-mocks: $(MOCKS)	## Run mock tests
+install-mockery:
+	@scripts/install-mockery.sh
 
-$(MOCKS): mocks/% : %
-	${MOCKERY_BIN} --tags=codegen --case=underscore --output=$@ --dir=$^ --all
+mocks: install-mockery ## Build mocks
+	@echo -n "building mocks for pkg/types ... "
+	@bin/mockery --quiet --all --tags=codegen --case=underscore --output=mocks/pkg/types --dir=pkg/types
+	@echo "ok."
 
 help:           ## Show this help.
 	@grep -F -h "##" $(MAKEFILE_LIST) | grep -F -v grep | sed -e 's/\\$$//' \

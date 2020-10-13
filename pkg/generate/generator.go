@@ -94,6 +94,7 @@ func (g *Generator) GetCRDs() ([]*ackmodel.CRD, error) {
 				createOp.Name, memberName,
 			)
 			memberNames := names.New(renamedName)
+			memberNames.ModelOrginal = memberName
 			if memberName == "Attributes" && g.cfg.UnpacksAttributesMap(crdName) {
 				crd.UnpackAttributes()
 				continue
@@ -238,10 +239,11 @@ func (g *Generator) GetTypeDefs() ([]*ackmodel.TypeDef, map[string]string, error
 			if strings.Contains(goPkgType, ".") {
 				if strings.HasPrefix(goPkgType, "[]") {
 					// For slice types, we just want the element type...
-					goPkgType = goPkgType[2:]
+					goPkgType = strings.TrimLeft(goPkgType, "[]")
 				}
 				if strings.HasPrefix(goPkgType, "map[") {
-					goPkgType = strings.Split(goPkgType, "]")[1]
+					// Assuming the map keys are always of type string.
+					goPkgType = strings.TrimLeft(goPkgType, "map[string]")
 				}
 				if strings.HasPrefix(goPkgType, "*") {
 					// For slice and map types, the element type might be a
